@@ -28,12 +28,18 @@ var (
 	dbError        error
 	inviteRegix    = `(discord\.(gg|com/invite|app\.com/invite)[/\\][\w-]+)`
 	inviteRe       *regexp.Regexp
+	tiktokRegix    = `https?:\/\/lite\.tiktok\.com\/t\/[A-Za-z0-9]+\/?`
+	tiktokRe       *regexp.Regexp
 	adminPermisson int64 = 8
 	ownerId        string
 	ruleTypes      []*discordgo.ApplicationCommandOptionChoice = []*discordgo.ApplicationCommandOptionChoice{
 		{
 			Name:  "Discord招待リンク",
 			Value: "invite",
+		},
+		{
+			Name:  "TiktokLiteリンク",
+			Value: "tiktok",
 		},
 	}
 	commands = []*discordgo.ApplicationCommand{
@@ -161,6 +167,20 @@ func includeInviteURL(message *discordgo.MessageCreate) bool {
 	return true
 }
 
+func includeTiktokURL(message *discordgo.MessageCreate) bool {
+	if !isRuleEnabled(message.GuildID, "tiktok") {
+		return false
+	}
+
+	matches := tiktokRe.FindAllString(message.Content, -1)
+
+	if len(matches) == 0 {
+		return false
+	}
+
+	return true
+}
+
 func getWhiteListChannel(guildId string) []string {
 	rows, err := db.Query("SELECT channel_id FROM whitelist WHERE guild_id = ?", guildId)
 
@@ -214,6 +234,7 @@ func main() {
 	}
 
 	inviteRe = regexp.MustCompile(inviteRegix)
+	tiktokRe = regexp.MustCompile(tiktokRegix)
 
 	db, dbError = sql.Open("sqlite", "./database.db")
 	if dbError != nil {
@@ -360,6 +381,76 @@ func main() {
 			if timeout_err == nil {
 				s.ChannelMessageSendEmbed(message.ChannelID, &discordgo.MessageEmbed{
 					Title:       "招待リンクが検知されました。",
+					Description: "3分間タイムアウトしました。",
+					Color:       16776960,
+					Author: &discordgo.MessageEmbedAuthor{
+						Name:    message.Author.Username + " (" + message.Author.ID + ")",
+						IconURL: avatarUrl,
+					},
+				})
+			}
+			return
+		}
+
+		tiktokInclude := includeTiktokURL(message)
+		if tiktokInclude {
+			messagedelete_err := s.ChannelMessageDelete(message.ChannelID, message.ID)
+			if messagedelete_err != nil {
+				return
+			}
+
+			avatarUrl := ""
+			if message.Author.Avatar != "" {
+				avatarUrl = "https://cdn.discordapp.com/avatars/" + message.Author.ID + "/" + message.Author.Avatar + ".png"
+			} else {
+				avatarUrl = "https://cdn.discordapp.com/embed/avatars/0.png"
+			}
+
+			// 3分間タイムアウト
+			duration_timeout := time.Now().Add(3 * time.Minute)
+			timeout_err := s.GuildMemberTimeout(message.GuildID, message.Author.ID, &duration_timeout)
+
+			if timeout_err != nil {
+				s.ChannelMessageSendEmbed(modlog_channel_id, &discordgo.MessageEmbed{
+					Title:       "タイムアウト権限がありません。",
+					Description: "処罰に失敗しました。\nタイムアウト権限を与えてください。",
+					Color:       16711680,
+					Author: &discordgo.MessageEmbedAuthor{
+						Name:    message.Author.Username + " (" + message.Author.ID + ")",
+						IconURL: avatarUrl,
+					},
+				})
+			}
+
+			// モデレーターログ
+			if modlog_channel_id != "" {
+				s.ChannelMessageSendEmbed(modlog_channel_id, &discordgo.MessageEmbed{
+					Title:       "TiktokLiteリンクが検知されました。",
+					Description: "メッセージは自動的に削除されました。",
+					Color:       16776960,
+					Author: &discordgo.MessageEmbedAuthor{
+						Name:    message.Author.Username + " (" + message.Author.ID + ")",
+						IconURL: avatarUrl,
+					},
+				})
+
+				if timeout_err == nil {
+					s.ChannelMessageSendEmbed(modlog_channel_id, &discordgo.MessageEmbed{
+						Title:       "自動でタイムアウトしました。",
+						Description: "3分間発言できなくしました。",
+						Color:       16711680,
+						Author: &discordgo.MessageEmbedAuthor{
+							Name:    message.Author.Username + " (" + message.Author.ID + ")",
+							IconURL: avatarUrl,
+						},
+					})
+				}
+			}
+
+			// 警告
+			if timeout_err == nil {
+				s.ChannelMessageSendEmbed(message.ChannelID, &discordgo.MessageEmbed{
+					Title:       "TiktokLiteリンクが検知されました。",
 					Description: "3分間タイムアウトしました。",
 					Color:       16776960,
 					Author: &discordgo.MessageEmbedAuthor{
@@ -654,6 +745,10 @@ func main() {
 
 			// 招待リンク対策を作成
 			_, err = db.Exec(`INSERT INTO automod (rule_type, guild_id) VALUES (?, ?)`, "invite", i.GuildID)
+			if err != nil {
+				log.Fatal(err)
+			}
+			_, err = db.Exec(`INSERT INTO automod (rule_type, guild_id) VALUES (?, ?)`, "tiktok", i.GuildID)
 			if err != nil {
 				log.Fatal(err)
 			}
