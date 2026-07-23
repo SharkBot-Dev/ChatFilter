@@ -30,7 +30,13 @@ var (
 	inviteRe       *regexp.Regexp
 	adminPermisson int64 = 8
 	ownerId        string
-	commands       = []*discordgo.ApplicationCommand{
+	ruleTypes      []*discordgo.ApplicationCommandOptionChoice = []*discordgo.ApplicationCommandOptionChoice{
+		{
+			Name:  "Discord招待リンク",
+			Value: "invite",
+		},
+	}
+	commands = []*discordgo.ApplicationCommand{
 		{
 			Name:                     "help",
 			Description:              "Botの使い方を知ります",
@@ -72,6 +78,25 @@ var (
 			},
 			DefaultMemberPermissions: &adminPermisson,
 		},
+		{
+			Name:        "automod",
+			Description: "AutoModを有効化、無効化します。",
+			Options: []*discordgo.ApplicationCommandOption{
+				{Name: "rule", Type: discordgo.ApplicationCommandOptionString, Description: "有効化するルール", Choices: ruleTypes, Required: true},
+				{Name: "enable", Type: discordgo.ApplicationCommandOptionBoolean, Description: "Trueは有効、Falseは無効", Required: true},
+			},
+			DefaultMemberPermissions: &adminPermisson,
+		},
+		{
+			Name:                     "setting",
+			Description:              "設定を表示します。",
+			DefaultMemberPermissions: &adminPermisson,
+		},
+		{
+			Name:                     "setup",
+			Description:              "Botをセットアップします。",
+			DefaultMemberPermissions: &adminPermisson,
+		},
 	}
 	startTime time.Time
 )
@@ -92,9 +117,41 @@ func initDB() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS automod (
+		rule_type TEXT,
+		guild_id TEXT
+	);`)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func ruleTypeIdToRuleName(ruletype_id string) string {
+	for _, ruleType := range ruleTypes {
+		if ruleType.Value == ruletype_id {
+			return ruleType.Name
+		}
+	}
+	return "不明"
+}
+
+func isRuleEnabled(guildId string, ruletype_id string) bool {
+	var guild_id string
+	err := db.QueryRow("SELECT guild_id FROM automod WHERE guild_id = ? AND rule_type = ?", guildId, ruletype_id).Scan(&guild_id)
+
+	if err == sql.ErrNoRows {
+		return false
+	}
+
+	return true
 }
 
 func includeInviteURL(message *discordgo.MessageCreate) bool {
+	if !isRuleEnabled(message.GuildID, "invite") {
+		return false
+	}
+
 	matches := inviteRe.FindAllString(message.Content, -1)
 
 	if len(matches) == 0 {
@@ -104,9 +161,34 @@ func includeInviteURL(message *discordgo.MessageCreate) bool {
 	return true
 }
 
-func getModLogChannel(message *discordgo.MessageCreate) string {
+func getWhiteListChannel(guildId string) []string {
+	rows, err := db.Query("SELECT channel_id FROM whitelist WHERE guild_id = ?", guildId)
+
+	if err == sql.ErrNoRows {
+		return []string{}
+	}
+
+	defer rows.Close()
+
+	channels := []string{}
+
+	for rows.Next() {
+		var channel_id string
+
+		err := rows.Scan(&channel_id)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		channels = append(channels, channel_id)
+	}
+
+	return channels
+}
+
+func getModLogChannel(guildId string) string {
 	var channel_id string
-	err := db.QueryRow("SELECT channel_id FROM modlog WHERE guild_id = ?", message.GuildID).Scan(&channel_id)
+	err := db.QueryRow("SELECT channel_id FROM modlog WHERE guild_id = ?", guildId).Scan(&channel_id)
 
 	if err == sql.ErrNoRows {
 		return ""
@@ -216,7 +298,7 @@ func main() {
 			return
 		}
 
-		var modlog_channel_id = getModLogChannel(message)
+		var modlog_channel_id = getModLogChannel(message.GuildID)
 
 		// 招待リンクチェック
 		IsIncludeInvite := includeInviteURL(message)
@@ -442,6 +524,184 @@ func main() {
 					},
 				})
 			}
+		case "automod":
+			rule_type := i.ApplicationCommandData().GetOption("rule").StringValue()
+			enable := i.ApplicationCommandData().GetOption("enable").BoolValue()
+
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+			})
+
+			if enable {
+				insertSQL := `INSERT INTO automod (rule_type, guild_id) VALUES (?, ?)`
+				_, err = db.Exec(insertSQL, rule_type, i.GuildID)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+					Embeds: &[]*discordgo.MessageEmbed{
+						{
+							Title: "ルールを有効化しました。",
+							Color: 7005735,
+							Fields: []*discordgo.MessageEmbedField{
+								{
+									Name:   "ルール名",
+									Value:  ruleTypeIdToRuleName(rule_type),
+									Inline: false,
+								},
+							},
+						},
+					},
+				})
+			} else {
+				deleteSQL := `DELETE FROM automod WHERE rule_type = ? AND guild_id = ?`
+				_, err = db.Exec(deleteSQL, rule_type, i.GuildID)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+					Embeds: &[]*discordgo.MessageEmbed{
+						{
+							Title: "ルールを無効化しました。",
+							Color: 7005735,
+							Fields: []*discordgo.MessageEmbedField{
+								{
+									Name:   "ルール名",
+									Value:  ruleTypeIdToRuleName(rule_type),
+									Inline: false,
+								},
+							},
+						},
+					},
+				})
+			}
+		case "setting":
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+			})
+
+			whitelist_channels := getWhiteListChannel(i.GuildID)
+			modlog_channel := getModLogChannel(i.GuildID)
+
+			whitelist_channels_mention := []string{}
+			for _, whitelist_channel := range whitelist_channels {
+				whitelist_channels_mention = append(whitelist_channels_mention, "- <#"+whitelist_channel+">")
+			}
+
+			enabled_rules := []string{}
+			for _, rule := range ruleTypes {
+				is_enabled := isRuleEnabled(i.GuildID, rule.Value.(string))
+				if is_enabled {
+					enabled_rules = append(enabled_rules, "- "+rule.Name)
+				}
+			}
+
+			fields := []*discordgo.MessageEmbedField{}
+			if len(whitelist_channels) != 0 {
+				fields = append(fields, &discordgo.MessageEmbedField{
+					Name:   "ホワイトリスト一覧",
+					Value:  strings.Join(whitelist_channels_mention, "\n"),
+					Inline: false,
+				})
+			} else {
+				fields = append(fields, &discordgo.MessageEmbedField{
+					Name:   "ホワイトリスト一覧",
+					Value:  "設定無し",
+					Inline: false,
+				})
+			}
+
+			if modlog_channel != "" {
+				fields = append(fields, &discordgo.MessageEmbedField{
+					Name:   "モデレーターログチャンネル",
+					Value:  "<#" + modlog_channel + ">",
+					Inline: false,
+				})
+			}
+
+			if len(enabled_rules) != 0 {
+				fields = append(fields, &discordgo.MessageEmbedField{
+					Name:   "有効なルール一覧",
+					Value:  strings.Join(enabled_rules, "\n"),
+					Inline: false,
+				})
+			} else {
+				fields = append(fields, &discordgo.MessageEmbedField{
+					Name:   "有効なルール一覧",
+					Value:  "/automodコマンドで有効化できます。",
+					Inline: false,
+				})
+			}
+
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Embeds: &[]*discordgo.MessageEmbed{
+					{
+						Title:  "現在の設定一覧です。",
+						Color:  7005735,
+						Fields: fields,
+					},
+				},
+			})
+		case "setup":
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+			})
+
+			deleteSQL := `DELETE FROM modlog WHERE guild_id = ?`
+			_, err = db.Exec(deleteSQL, i.GuildID)
+
+			// 招待リンク対策を作成
+			_, err = db.Exec(`INSERT INTO automod (rule_type, guild_id) VALUES (?, ?)`, "invite", i.GuildID)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			// ModLogの作成
+			permissionOverwrites := []*discordgo.PermissionOverwrite{
+				{
+					ID:   i.GuildID,
+					Type: discordgo.PermissionOverwriteTypeRole,
+					Deny: discordgo.PermissionViewChannel,
+				},
+			}
+
+			channel, err := s.GuildChannelCreateComplex(i.GuildID, discordgo.GuildChannelCreateData{
+				Name:                 "modlog",
+				Type:                 discordgo.ChannelTypeGuildText,
+				PermissionOverwrites: permissionOverwrites,
+			})
+
+			if err != nil {
+				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+					Embeds: &[]*discordgo.MessageEmbed{
+						{
+							Title:       "権限がありません。",
+							Color:       16711680,
+							Description: "権限がないため、\nモデレーターログチャンネルを\n作成できませんでした。",
+						},
+					},
+				})
+
+				return
+			}
+
+			// ModLogのセーブ
+			_, err = db.Exec(`INSERT INTO modlog (channel_id, guild_id) VALUES (?, ?)`, channel.ID, i.GuildID)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Embeds: &[]*discordgo.MessageEmbed{
+					{
+						Title:       "セットアップをしました。",
+						Color:       7005735,
+						Description: "- すべてのルールを有効化しました。\n- <#" + channel.ID + ">を作成しました。",
+					},
+				},
+			})
 		}
 	})
 
