@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"database/sql"
 	"log"
 	"os"
@@ -41,8 +42,13 @@ var (
 			Name:  "TiktokLiteリンク",
 			Value: "tiktok",
 		},
+		{
+			Name:  "スパム",
+			Value: "spam",
+		},
 	}
-	commands = []*discordgo.ApplicationCommand{
+	spamTextList []string
+	commands     = []*discordgo.ApplicationCommand{
 		{
 			Name:                     "help",
 			Description:              "Botの使い方を知ります",
@@ -217,6 +223,42 @@ func getModLogChannel(guildId string) string {
 	return channel_id
 }
 
+func loadSpamTextChannel() bool {
+	file, err := os.Open("data/spam.txt")
+	if err != nil {
+		log.Print("スパムのロードに失敗しました。")
+		return false
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		spamTextList = append(spamTextList, scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Fatal(err)
+	}
+
+	log.Print("スパムのロードをしました。")
+
+	return true
+}
+
+func includeSpamText(message *discordgo.MessageCreate) bool {
+	if !isRuleEnabled(message.GuildID, "spam") {
+		return false
+	}
+
+	for _, spam := range spamTextList {
+		if strings.Contains(message.Content, spam) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -235,6 +277,8 @@ func main() {
 
 	inviteRe = regexp.MustCompile(inviteRegix)
 	tiktokRe = regexp.MustCompile(tiktokRegix)
+
+	loadSpamTextChannel()
 
 	db, dbError = sql.Open("sqlite", "./database.db")
 	if dbError != nil {
@@ -300,6 +344,11 @@ func main() {
 						s.ChannelMessageSend(message.ChannelID, "終了します...")
 						session.Close()
 						os.Exit(0)
+
+					case "reload":
+						spamTextList = []string{}
+						loadSpamTextChannel()
+						s.ChannelMessageSend(message.ChannelID, "必要なテキストをリロードしました。")
 					}
 					return
 				}
@@ -461,6 +510,76 @@ func main() {
 			}
 			return
 		}
+
+		spamInclude := includeSpamText(message)
+		if spamInclude {
+			messagedelete_err := s.ChannelMessageDelete(message.ChannelID, message.ID)
+			if messagedelete_err != nil {
+				return
+			}
+
+			avatarUrl := ""
+			if message.Author.Avatar != "" {
+				avatarUrl = "https://cdn.discordapp.com/avatars/" + message.Author.ID + "/" + message.Author.Avatar + ".png"
+			} else {
+				avatarUrl = "https://cdn.discordapp.com/embed/avatars/0.png"
+			}
+
+			// 3分間タイムアウト
+			duration_timeout := time.Now().Add(3 * time.Minute)
+			timeout_err := s.GuildMemberTimeout(message.GuildID, message.Author.ID, &duration_timeout)
+
+			if timeout_err != nil {
+				s.ChannelMessageSendEmbed(modlog_channel_id, &discordgo.MessageEmbed{
+					Title:       "タイムアウト権限がありません。",
+					Description: "処罰に失敗しました。\nタイムアウト権限を与えてください。",
+					Color:       16711680,
+					Author: &discordgo.MessageEmbedAuthor{
+						Name:    message.Author.Username + " (" + message.Author.ID + ")",
+						IconURL: avatarUrl,
+					},
+				})
+			}
+
+			// モデレーターログ
+			if modlog_channel_id != "" {
+				s.ChannelMessageSendEmbed(modlog_channel_id, &discordgo.MessageEmbed{
+					Title:       "スパムが検知されました。",
+					Description: "メッセージは自動的に削除されました。",
+					Color:       16776960,
+					Author: &discordgo.MessageEmbedAuthor{
+						Name:    message.Author.Username + " (" + message.Author.ID + ")",
+						IconURL: avatarUrl,
+					},
+				})
+
+				if timeout_err == nil {
+					s.ChannelMessageSendEmbed(modlog_channel_id, &discordgo.MessageEmbed{
+						Title:       "自動でタイムアウトしました。",
+						Description: "3分間発言できなくしました。",
+						Color:       16711680,
+						Author: &discordgo.MessageEmbedAuthor{
+							Name:    message.Author.Username + " (" + message.Author.ID + ")",
+							IconURL: avatarUrl,
+						},
+					})
+				}
+			}
+
+			// 警告
+			if timeout_err == nil {
+				s.ChannelMessageSendEmbed(message.ChannelID, &discordgo.MessageEmbed{
+					Title:       "スパムが検知されました。",
+					Description: "3分間タイムアウトしました。",
+					Color:       16776960,
+					Author: &discordgo.MessageEmbedAuthor{
+						Name:    message.Author.Username + " (" + message.Author.ID + ")",
+						IconURL: avatarUrl,
+					},
+				})
+			}
+			return
+		}
 	})
 
 	session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -481,8 +600,8 @@ func main() {
 							Color: 16769280,
 							Fields: []*discordgo.MessageEmbedField{
 								{
-									Name:   "招待リンク削除",
-									Value:  "自動で招待リンクを削除し、\n3分間タイムアウトします。",
+									Name:   "スパムの自動削除",
+									Value:  "自動でスパムや招待リンクを削除し、\n3分間タイムアウトします。",
 									Inline: false,
 								},
 								{
@@ -748,7 +867,15 @@ func main() {
 			if err != nil {
 				log.Fatal(err)
 			}
+
+			// tiktok対策
 			_, err = db.Exec(`INSERT INTO automod (rule_type, guild_id) VALUES (?, ?)`, "tiktok", i.GuildID)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			// スパム対策
+			_, err = db.Exec(`INSERT INTO automod (rule_type, guild_id) VALUES (?, ?)`, "spam", i.GuildID)
 			if err != nil {
 				log.Fatal(err)
 			}
