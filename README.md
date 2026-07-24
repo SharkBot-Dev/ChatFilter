@@ -27,3 +27,4 @@ OWNER_ID=Botの管理者のDiscordユーザーID
 管理者専用コマンド一覧です👇️
 - %ping Botが動いているかを確認します。
 - %shutdown Botをシャットダウンします。
+- %reload Botの読み込んでいるテキストを再読み込みします。
