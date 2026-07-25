@@ -23,7 +23,9 @@ OWNER_ID=Botの管理者のDiscordユーザーID
 - /whitelist チャンネルをホワイトリストに追加します。
 - /setting 現在の設定を確認をします。
 - /setup 最初のセットアップします。
-- /help ヘルプを表示します。<br>
+- /help ヘルプを表示します。
+<br>
+
 管理者専用コマンド一覧です👇️
 - %ping Botが動いているかを確認します。
 - %shutdown Botをシャットダウンします。
