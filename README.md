@@ -8,6 +8,7 @@
 ```
 DISCORD_TOKEN=Discord Developerで作成したBotのToken
 OWNER_ID=Botの管理者のDiscordユーザーID
+PREFIX=%（管理者コマンド用Prefixを入力）
 ```
 4. あとはchatfilter.exeを起動し、エラーが出なければ成功です。
 5. 作成したBotに管理者権限を与えてサーバーに招待してください。
@@ -26,7 +27,11 @@ OWNER_ID=Botの管理者のDiscordユーザーID
 - /help ヘルプを表示します。
 <br>
 
-管理者専用コマンド一覧です👇️
-- %ping Botが動いているかを確認します。
-- %shutdown Botをシャットダウンします。
-- %reload Botの読み込んでいるテキストを再読み込みします。
+管理者専用コマンド一覧です👇️<br>
+管理者用コマンドは、指定したPrefixを最初に付ける必要があります。<br>
+つまり、Prefixが「%」の場合、%pingとなります。
+- `ping` Botが動いているかを確認します。
+- `shutdown` Botをシャットダウンします。
+- `reload` Botの読み込んでいるテキストを再読み込みします。
+- `guild [サーバーID]` 参加しているサーバーを取得します。
+- `leave [サーバーID]` 参加しているサーバーから退出します。

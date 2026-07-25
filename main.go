@@ -47,8 +47,9 @@ var (
 			Value: "spam",
 		},
 	}
-	spamTextList []string
-	commands     = []*discordgo.ApplicationCommand{
+	spamTextList  []string
+	commandPrefix string = "%"
+	commands             = []*discordgo.ApplicationCommand{
 		{
 			Name:                     "help",
 			Description:              "Botの使い方を知ります",
@@ -209,6 +210,10 @@ func getWhiteListChannel(guildId string) []string {
 		channels = append(channels, channel_id)
 	}
 
+	if err = rows.Err(); err != nil {
+		log.Fatal(err)
+	}
+
 	return channels
 }
 
@@ -275,6 +280,11 @@ func main() {
 		log.Fatal("環境変数 OWNER_ID が設定されていません")
 	}
 
+	commandPrefix = os.Getenv("PREFIX")
+	if commandPrefix == "" {
+		commandPrefix = "%"
+	}
+
 	inviteRe = regexp.MustCompile(inviteRegix)
 	tiktokRe = regexp.MustCompile(tiktokRegix)
 
@@ -328,13 +338,13 @@ func main() {
 
 		// OwnerCommand
 		if message.Author.ID == ownerId {
-			if strings.HasPrefix(message.Content, "%") {
-				content := strings.TrimPrefix(message.Content, "%")
+			if strings.HasPrefix(message.Content, commandPrefix) {
+				content := strings.TrimPrefix(message.Content, commandPrefix)
 				args := strings.Fields(content)
 
 				if len(args) != 0 {
 					command := strings.ToLower(args[0])
-					// commandArgs := args[1:]
+					commandArgs := args[1:]
 
 					switch command {
 					case "ping":
@@ -349,6 +359,56 @@ func main() {
 						spamTextList = []string{}
 						loadSpamTextChannel()
 						s.ChannelMessageSend(message.ChannelID, "必要なテキストをリロードしました。")
+
+					case "guild":
+						if len(commandArgs) == 0 {
+							s.ChannelMessageSend(message.ChannelID, "使用方法: `"+commandPrefix+"guild サーバーid`")
+							return
+						}
+						guild_obj, guild_err := s.State.Guild(commandArgs[0])
+						if guild_err != nil {
+							s.ChannelMessageSend(message.ChannelID, "サーバーが存在しません。")
+							return
+						}
+						icon_url := ""
+						if guild_obj.Icon != "" {
+							icon_url = guild_obj.IconURL("1024")
+						}
+						s.ChannelMessageSendEmbed(message.ChannelID, &discordgo.MessageEmbed{
+							Title: guild_obj.Name,
+							Color: 7005735,
+							Fields: []*discordgo.MessageEmbedField{
+								{
+									Name:   "サーバーID",
+									Value:  guild.ID,
+									Inline: false,
+								},
+								{
+									Name:   "オーナーID",
+									Value:  "<@" + guild_obj.OwnerID + "> (`" + guild_obj.OwnerID + "`)",
+									Inline: false,
+								},
+							},
+							Thumbnail: &discordgo.MessageEmbedThumbnail{
+								URL: icon_url,
+							},
+						})
+
+					case "leave":
+						if len(commandArgs) == 0 {
+							s.ChannelMessageSend(message.ChannelID, "使用方法: `"+commandPrefix+"leave サーバーid`")
+							return
+						}
+						leave_guild, guild_err := s.State.Guild(commandArgs[0])
+						if guild_err != nil {
+							s.ChannelMessageSend(message.ChannelID, "サーバーが存在しません。")
+							return
+						}
+						s.GuildLeave(commandArgs[0])
+						s.ChannelMessageSendComplex(message.ChannelID, &discordgo.MessageSend{
+							Content:         "`" + leave_guild.Name + "`から退出しました。\nサーバーID: `" + leave_guild.ID + "`",
+							AllowedMentions: &discordgo.MessageAllowedMentions{},
+						})
 					}
 					return
 				}
@@ -600,8 +660,13 @@ func main() {
 							Color: 16769280,
 							Fields: []*discordgo.MessageEmbedField{
 								{
+									Name:   "簡単なセットアップ",
+									Value:  "モデレーターログを作成し、\n様々なスパム対策を有効にできます。\n`/setup`で実行可能です。",
+									Inline: false,
+								},
+								{
 									Name:   "スパムの自動削除",
-									Value:  "自動でスパムや招待リンクを削除し、\n3分間タイムアウトします。",
+									Value:  "自動でスパムや招待リンクを削除し、\n3分間タイムアウトします。\n`/automod`で設定可能です。",
 									Inline: false,
 								},
 								{
@@ -899,9 +964,9 @@ func main() {
 				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 					Embeds: &[]*discordgo.MessageEmbed{
 						{
-							Title:       "権限がありません。",
+							Title:       "Botに権限がありません。",
 							Color:       16711680,
-							Description: "権限がないため、\nモデレーターログチャンネルを\n作成できませんでした。",
+							Description: "Botに権限がないため、\nモデレーターログチャンネルを\n作成できませんでした。",
 						},
 					},
 				})
